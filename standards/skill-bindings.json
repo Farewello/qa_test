@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "bindings": {
+    "requirement-analysis": {
+      "status": "unbound",
+      "skill_name": null,
+      "skill_file": null,
+      "input_entry": "changes/{REQ}/context.md",
+      "output": "changes/{REQ}/analysis.md",
+      "notes": "绑定现有需求分析 Skill；不得在本项目中伪造替代实现。"
+    },
+    "testcase-generation": {
+      "status": "unbound",
+      "skill_name": null,
+      "skill_file": null,
+      "input_entry": "changes/{REQ}/testcase-handoff.md",
+      "output": "changes/{REQ}/testcases/",
+      "notes": "绑定现有测试用例生成 Skill；最终用例格式以该 Skill 为准。"
+    }
+  }
+}
+
