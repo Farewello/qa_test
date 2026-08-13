@@ -1,8 +1,5 @@
+CLAUDE.local.md
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.coverage
-changes/.current
-.qa-cache/
-CLAUDE.local.md
-
+.DS_Store
+Thumbs.db

@@ -1,47 +1,39 @@
-# QA Knowledge Project
+# QA Test
 
-这是一个 Git-native、Agent-neutral 的 QA 知识项目。它复用已有的需求分析 Skill 和测试用例生成 Skill，并补充：
+这是一个面向 Coding Agent 的轻量 QA 项目，用于完成：
 
-- 最小充分上下文发现；
-- 需求分析与用例生成之间的稳定交接；
-- 可审计的知识合并；
-- Change 状态和结构校验。
+1. 需求分析；
+2. 最终测试用例生成；
+3. 有证据的项目知识更新。
 
-## 快速开始
+## 核心路径
 
-```powershell
-python scripts/qa.py doctor
-python scripts/qa.py new REQ-102 --title "增加已支付订单取消能力"
-python scripts/qa.py status REQ-102
-python scripts/qa.py validate --change REQ-102
-```
+| 路径 | 作用 | 是否必需 |
+|---|---|---|
+| `requirements/` | 保存 PRD、用户故事、需求说明等原始资料 | 否 |
+| `technical-docs/` | 保存技术方案、接口说明、数据设计等资料 | 否 |
+| `changes/{CHANGE-ID}/analysis.md` | 当前变更的需求分析 | 是 |
+| `testcases/{CHANGE-ID}/cases.md` | 可交付的最终测试用例 | 是 |
+| `changes/{CHANGE-ID}/update.md` | Knowledge 更新审计记录 | 是 |
+| `knowledge/INDEX.md` | 项目知识路由入口 | 是 |
 
-仓库已绑定两个项目内默认 Skill，用于框架验证。真实 Skill 到位后，先将完整 Skill 目录放入项目，例如 `skills/incoming/`，再使用相对路径替换：
+需求和技术文档是独立资料源，不强制一一对应。例如，同一个 Change 可以只有需求、只有技术文档、同时引用多份资料，或者仅使用用户当前描述。
 
-```powershell
-python scripts/qa.py bind requirement-analysis skills/incoming/requirements-analysis-plus/SKILL.md --replace
-python scripts/qa.py bind testcase-generation skills/incoming/testcase-writer-plus/SKILL.md --replace
-python scripts/qa.py validate-paths
-```
+## 使用方式
 
-默认 Skill 不代表最终组织级需求分析和测试用例规范。
-
-## 核心边界
-
-- `changes/{REQ}/input/` 保存原始 Evidence。
-- `changes/{REQ}/analysis.md` 保存需求分析结果。
-- `knowledge/` 只保存有 Evidence、稳定、可复用的系统认知。
-- 测试用例、Agent 推测和 Assumption 不能作为系统事实写入 Knowledge。
-- `workflow_state=DONE` 仅表示工作流完成；是否可执行测试由 `test_readiness` 判断。
-
-## 已验证示例
-
-`changes/REQ-001/` 使用仅包含“文件导出”的极简需求跑完了整个流程。其最终状态为：
+向 Agent 提供 `CHANGE-ID` 和现有资料路径，然后要求执行完整流程。示例：
 
 ```text
-workflow_state = DONE
-delivery_status = planned
-test_readiness = blocked
+处理 CHG-102：
+- 需求：requirements/REQ-88/requirement.md
+- 技术文档：technical-docs/EXPORT-2/api.md
+- 输出需求分析、最终用例并更新 Knowledge
 ```
 
-这表示分析和用例设计已经完成，但规格不足，测试尚不可执行。详细评估见 `changes/REQ-001/evaluation.md`。
+没有文档时可直接提交：
+
+```text
+处理 CHG-103：支持文件导出。没有需求和技术文档，请按现有信息完成分析和用例设计。
+```
+
+Agent 的详细执行规则见 `AGENTS.md`。`changes/REQ-001/` 和 `testcases/REQ-001/` 是“文件导出”极简输入的已验证示例；由于规格不足，用例被明确标记为受阻，而不是补造业务规则。

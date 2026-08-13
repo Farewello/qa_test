@@ -1,4 +1,0 @@
-interface:
-  display_name: "默认用例生成"
-  short_description: "用于框架验证并依据需求分析生成可追踪用例与覆盖矩阵"
-  default_prompt: "Use $testcase-writer-default to generate traceable cases from the current requirement analysis."
