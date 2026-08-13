@@ -30,6 +30,8 @@
 
 不得跳过 Requirement Analysis 直接生成测试用例。
 
+`workflow_state=DONE` 只表示 QA 工作流已经结束。必须同时读取 `test_readiness`：`ready` 表示全部 Test Focus 已覆盖，`partial` 表示部分覆盖或阻塞，`blocked` 表示全部用例受 Unknown 或外部条件阻塞。
+
 ## Progressive Context Loading
 
 按以下层级逐步加载，不得默认递归读取全部 Knowledge 或全部历史 Change：
@@ -69,4 +71,3 @@ Change 标记为 `DONE` 前必须满足：
 - Knowledge 候选已完成 Merge 或记录 SKIP 原因；
 - 项目校验通过；
 - Unknown 和 Assumption 没有被写成确定事实。
-

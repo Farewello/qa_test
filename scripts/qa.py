@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -24,10 +25,21 @@ WORKFLOW_STATES = (
     "DONE",
 )
 DELIVERY_STATUSES = ("unknown", "planned", "implemented", "released", "cancelled")
+TEST_READINESS_STATUSES = ("unknown", "ready", "partial", "blocked")
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 KNOWLEDGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9-]+)\s*\|[^\n]*\n(?P<body>.*?)(?=^###\s+|\Z)",
     re.MULTILINE | re.DOTALL,
+)
+WINDOWS_ABSOLUTE_PATH = re.compile(r"(?i)(?<![A-Za-z0-9])[A-Z]:[\\/]")
+PORTABLE_CONTROL_PATHS = (
+    "README.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "standards",
+    "skills",
+    ".agents",
+    ".claude",
 )
 
 
@@ -100,6 +112,7 @@ def create_change(root: Path, requirement_id: str, title: str) -> Path:
         "title": title.strip(),
         "workflow_state": "NEW",
         "delivery_status": "planned",
+        "test_readiness": "unknown",
         "analysis_skill": bindings["requirement-analysis"].get("skill_name"),
         "testcase_skill": bindings["testcase-generation"].get("skill_name"),
         "created_at": today,
@@ -150,12 +163,13 @@ def _write_adapter(root: Path, provider_dir: str, skill_name: str, target: str) 
     adapter = root / provider_dir / "skills" / skill_name / "SKILL.md"
     adapter.parent.mkdir(parents=True, exist_ok=True)
     provider = "Codex" if provider_dir == ".agents" else "Claude Code"
+    relative_target = os.path.relpath(root / target, adapter.parent).replace("\\", "/")
     adapter.write_text(
         "---\n"
         f"name: {skill_name}\n"
         f"description: 项目绑定的现有 QA Skill：{skill_name}。具体触发条件以 canonical SKILL.md 为准。\n"
         "---\n\n"
-        f"完整读取并执行项目根目录下的 `{target}`。"
+        f"完整读取并执行相对于本文件的 `{relative_target}`。"
         f"该文件是 vendored 原始 Skill，本文件仅用于 {provider} 项目级发现。\n",
         encoding="utf-8",
     )
@@ -167,39 +181,51 @@ def bind_skill(
     if role not in ROLE_NAMES:
         raise ValueError(f"未知 Skill role：{role}")
     skill_file = skill_file.resolve()
+    resolved_root = root.resolve()
     if not skill_file.is_file():
         raise FileNotFoundError(f"Skill 文件不存在或链接失效：{skill_file}")
     if skill_file.name.lower() != "skill.md":
         raise ValueError("绑定路径必须指向 SKILL.md")
 
     skill_name = parse_skill_name(skill_file)
-    external_root = root / "skills" / "external"
-    destination = external_root / role
-    if destination.exists():
-        if not replace:
-            raise FileExistsError(
-                f"角色 {role} 已有 vendored Skill；如需替换请显式使用 --replace"
-            )
-        _safe_remove_vendored(destination, external_root)
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(skill_file.parent, destination)
-    vendored_file = destination / "SKILL.md"
-    relative = vendored_file.relative_to(root).as_posix()
-
     data = load_bindings(root)
     binding = data["bindings"][role]
+    old_skill_name = binding.get("skill_name")
+    if binding.get("status") == "bound" and not replace:
+        raise FileExistsError(f"角色 {role} 已绑定；如需替换请显式使用 --replace")
+
+    if skill_file.is_relative_to(resolved_root):
+        relative = skill_file.relative_to(resolved_root).as_posix()
+    else:
+        external_root = root / "skills" / "external"
+        destination = external_root / role
+        if destination.exists():
+            if not replace:
+                raise FileExistsError(
+                    f"角色 {role} 已有 vendored Skill；如需替换请显式使用 --replace"
+                )
+            _safe_remove_vendored(destination, external_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(skill_file.parent, destination)
+        relative = (destination / "SKILL.md").relative_to(root).as_posix()
+
+    binding.pop("source_hint", None)
     binding.update(
         {
             "status": "bound",
             "skill_name": skill_name,
             "skill_file": relative,
-            "source_hint": str(skill_file),
         }
     )
-    write_json(root / "standards" / "skill-bindings.json", data)
     _write_adapter(root, ".agents", skill_name, relative)
     _write_adapter(root, ".claude", skill_name, relative)
+    write_json(root / "standards" / "skill-bindings.json", data)
+    if replace and old_skill_name and old_skill_name != skill_name:
+        for provider in (".agents", ".claude"):
+            old_adapter = root / provider / "skills" / str(old_skill_name)
+            marker = old_adapter / "SKILL.md"
+            if marker.is_file() and "本文件仅用于" in marker.read_text(encoding="utf-8"):
+                shutil.rmtree(old_adapter)
     return binding
 
 
@@ -233,6 +259,10 @@ def transition_change(
         raise ValueError("目标阶段门禁失败：" + "；".join(validation.errors))
 
     state["workflow_state"] = workflow_state
+    if next_index >= WORKFLOW_STATES.index("CASES_GENERATED"):
+        state["test_readiness"] = infer_test_readiness(
+            coverage_statuses(change_dir / "testcases" / "coverage.md")
+        )
     if delivery_status is not None:
         state["delivery_status"] = delivery_status
     state["updated_at"] = date.today().isoformat()
@@ -243,6 +273,66 @@ def transition_change(
 def _require_file(result: ValidationResult, path: Path, label: str) -> None:
     if not path.is_file():
         result.errors.append(f"缺少 {label}：{path}")
+
+
+def _read_if_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+def _validate_context_content(result: ValidationResult, path: Path) -> None:
+    text = _read_if_file(path)
+    if not re.search(r"(?m)^\|\s*L[0-4]\s*\|", text) or not re.search(
+        r"(?m)^-\s+`?(?:input|normalized|knowledge)/", text
+    ):
+        result.errors.append(f"context.md 尚未形成有效上下文：{path}")
+
+
+def _validate_analysis_content(result: ValidationResult, path: Path) -> None:
+    text = _read_if_file(path)
+    checks = {
+        "Existing Behavior": r"(?i)Existing Behavior|现有行为",
+        "New Behavior": r"(?i)New Behavior|新行为",
+        "Unknowns": r"(?i)Unknowns|未知项|待确认",
+        "可追踪 Test Focus": r"TF-\d{3,}",
+    }
+    for label, pattern in checks.items():
+        if not re.search(pattern, text):
+            result.errors.append(f"analysis.md 缺少{label}：{path}")
+
+
+def _validate_cases_content(result: ValidationResult, change_dir: Path) -> None:
+    handoff = _read_if_file(change_dir / "testcase-handoff.md")
+    coverage = _read_if_file(change_dir / "testcases" / "coverage.md")
+    if not re.search(r"TF-\d{3,}", handoff):
+        result.errors.append("testcase-handoff.md 没有 Test Focus 映射")
+    if not re.search(r"(?m)^\|\s*TF-\d{3,}\s*\|", coverage):
+        result.errors.append("coverage.md 没有可追踪覆盖记录")
+    if re.search(r"(?m)^\|\s*TF-\d{3,}.*\|\s*Not covered\s*\|", coverage):
+        result.errors.append("coverage.md 存在 Not covered 的 Test Focus")
+
+
+def coverage_statuses(path: Path) -> list[str]:
+    text = _read_if_file(path)
+    return re.findall(
+        r"(?m)^\|\s*TF-\d{3,}\s*\|.*?\|\s*(Covered|Partial|Blocked|Not covered)\s*\|\s*$",
+        text,
+    )
+
+
+def infer_test_readiness(statuses: list[str]) -> str:
+    if not statuses:
+        return "unknown"
+    if all(status == "Covered" for status in statuses):
+        return "ready"
+    if all(status == "Blocked" for status in statuses):
+        return "blocked"
+    return "partial"
+
+
+def _validate_knowledge_update_content(result: ValidationResult, path: Path) -> None:
+    text = _read_if_file(path)
+    if not re.search(r"(?m)^\|.+\|\s*(?:CREATE|UPDATE|DEPRECATE|SKIP)\s*\|", text):
+        result.errors.append(f"knowledge-update.md 没有 Merge Decision：{path}")
 
 
 def validate_change(
@@ -261,17 +351,21 @@ def validate_change(
         return result
     if state.get("delivery_status") not in DELIVERY_STATUSES:
         result.errors.append(f"未知 delivery_status：{state.get('delivery_status')}")
+    if state.get("test_readiness", "unknown") not in TEST_READINESS_STATUSES:
+        result.errors.append(f"未知 test_readiness：{state.get('test_readiness')}")
 
     level = WORKFLOW_STATES.index(state_name)
     _require_file(result, change_dir / "state.json", "state.json")
     _require_file(result, change_dir / "sources.md", "sources.md")
     if level >= WORKFLOW_STATES.index("CONTEXT_READY"):
         _require_file(result, change_dir / "context.md", "context.md")
+        _validate_context_content(result, change_dir / "context.md")
     if level >= WORKFLOW_STATES.index("ANALYZED"):
         bindings = load_bindings(root)["bindings"]
         if bindings["requirement-analysis"].get("status") != "bound":
             result.errors.append("需求分析 Skill 尚未绑定")
         _require_file(result, change_dir / "analysis.md", "analysis.md")
+        _validate_analysis_content(result, change_dir / "analysis.md")
     if level >= WORKFLOW_STATES.index("CASES_GENERATED"):
         bindings = load_bindings(root)["bindings"]
         if bindings["testcase-generation"].get("status") != "bound":
@@ -285,8 +379,12 @@ def validate_change(
         ]
         if not case_files:
             result.errors.append("testcases/ 中没有现有用例生成 Skill 的输出")
+        elif all(not path.read_text(encoding="utf-8").strip() for path in case_files):
+            result.errors.append("testcases/ 中的用例输出为空")
+        _validate_cases_content(result, change_dir)
     if level >= WORKFLOW_STATES.index("KNOWLEDGE_UPDATED"):
         _require_file(result, change_dir / "knowledge-update.md", "knowledge-update.md")
+        _validate_knowledge_update_content(result, change_dir / "knowledge-update.md")
         result.merge(validate_knowledge(root))
     return result
 
@@ -354,9 +452,10 @@ def validate_adapters(root: Path) -> ValidationResult:
             result.errors.append(f"缺少 canonical Skill：{target}")
         for provider in (".agents", ".claude"):
             adapter = root / provider / "skills" / name / "SKILL.md"
+            expected = os.path.relpath(root / target, adapter.parent).replace("\\", "/")
             if not adapter.is_file():
                 result.errors.append(f"缺少 {provider} adapter：{adapter}")
-            elif target not in adapter.read_text(encoding="utf-8"):
+            elif expected not in adapter.read_text(encoding="utf-8"):
                 result.errors.append(f"Adapter 未指向 canonical Skill：{adapter}")
 
     try:
@@ -380,6 +479,29 @@ def validate_adapters(root: Path) -> ValidationResult:
                     result.errors.append(f"绑定 Skill 缺少 {provider} adapter：{adapter}")
         else:
             result.warnings.append(f"{role} 尚未绑定")
+    return result
+
+
+def validate_portable_paths(root: Path) -> ValidationResult:
+    result = ValidationResult()
+    candidates: list[Path] = []
+    for item in PORTABLE_CONTROL_PATHS:
+        path = root / item
+        if path.is_file():
+            candidates.append(path)
+        elif path.is_dir():
+            candidates.extend(
+                child
+                for child in path.rglob("*")
+                if child.is_file()
+                and child.suffix.lower() in {".md", ".json", ".yaml", ".yml", ".toml"}
+            )
+    for path in candidates:
+        text = path.read_text(encoding="utf-8")
+        if WINDOWS_ABSOLUTE_PATH.search(text) or "file://" in text.lower():
+            result.errors.append(
+                f"控制面文件包含不可迁移的绝对路径：{path.relative_to(root).as_posix()}"
+            )
     return result
 
 
@@ -420,6 +542,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("validate-knowledge", help="校验 Knowledge ID、字段和 Evidence")
     sub.add_parser("validate-adapters", help="校验 canonical Skill、绑定和适配层")
+    sub.add_parser("validate-paths", help="校验控制面文件只使用项目相对路径")
     sub.add_parser("doctor", help="检查框架、Skill 绑定和 Knowledge")
     return parser
 
@@ -453,10 +576,13 @@ def main(argv: list[str] | None = None) -> int:
             return print_result(validate_knowledge(root))
         if args.command == "validate-adapters":
             return print_result(validate_adapters(root))
+        if args.command == "validate-paths":
+            return print_result(validate_portable_paths(root))
         if args.command == "validate":
             result = ValidationResult()
             result.merge(validate_adapters(root))
             result.merge(validate_knowledge(root))
+            result.merge(validate_portable_paths(root))
             if args.change:
                 result.merge(validate_change(root, args.change))
             return print_result(result)
@@ -464,6 +590,7 @@ def main(argv: list[str] | None = None) -> int:
             result = ValidationResult()
             result.merge(validate_adapters(root))
             result.merge(validate_knowledge(root))
+            result.merge(validate_portable_paths(root))
             return print_result(result)
     except (FileNotFoundError, FileExistsError, ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -2,21 +2,20 @@
   "schema_version": 1,
   "bindings": {
     "requirement-analysis": {
-      "status": "unbound",
-      "skill_name": null,
-      "skill_file": null,
+      "status": "bound",
+      "skill_name": "requirements-analysis-default",
+      "skill_file": "skills/defaults/requirements-analysis-default/SKILL.md",
       "input_entry": "changes/{REQ}/context.md",
       "output": "changes/{REQ}/analysis.md",
-      "notes": "绑定现有需求分析 Skill；不得在本项目中伪造替代实现。"
+      "notes": "项目内默认实现，仅用于框架验证；真实需求分析 Skill 到位后使用相对路径替换。"
     },
     "testcase-generation": {
-      "status": "unbound",
-      "skill_name": null,
-      "skill_file": null,
+      "status": "bound",
+      "skill_name": "testcase-writer-default",
+      "skill_file": "skills/defaults/testcase-writer-default/SKILL.md",
       "input_entry": "changes/{REQ}/testcase-handoff.md",
       "output": "changes/{REQ}/testcases/",
-      "notes": "绑定现有测试用例生成 Skill；最终用例格式以该 Skill 为准。"
+      "notes": "项目内默认实现，仅用于框架验证；真实用例生成 Skill 到位后使用相对路径替换。"
     }
   }
 }
-

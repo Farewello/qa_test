@@ -1,0 +1,4 @@
+interface:
+  display_name: "默认需求分析"
+  short_description: "用于框架流程验证并保守提炼需求影响与可追踪测试关注点"
+  default_prompt: "Use $requirements-analysis-default to analyze the current QA change without inventing unsupported facts."
